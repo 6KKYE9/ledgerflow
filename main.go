@@ -27,6 +27,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   month      按月趋势         ledgerflow month
   chart      收支柱状图       ledgerflow chart
   categories 查看类别         ledgerflow categories
+  tags       查看所有标签     ledgerflow tags
   budget     设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
   edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮 -tag 旅行
   del        删除记录         ledgerflow del <id> | ledgerflow del --all --yes
@@ -77,6 +78,8 @@ func main() {
 		cmdChart(st)
 	case "categories":
 		cmdCategories(st)
+	case "tags":
+		cmdTags(st)
 	case "budget":
 		cmdBudget(st, args)
 	case "edit":
@@ -458,6 +461,16 @@ func cmdCategories(st *store.Store) {
 	ui.Header()
 	ui.Categories(st.Categories())
 	ui.Info("提示：使用 add -cat 可记录任意自定义类别")
+}
+
+func cmdTags(st *store.Store) {
+	ui.Header()
+	tags := st.AllTags()
+	if len(tags) == 0 {
+		ui.Info("暂无标签，使用 add -tag 为记录打标签")
+		return
+	}
+	ui.Info("全部标签（按使用频率）: " + strings.Join(tags, "、"))
 }
 
 func cmdReset(st *store.Store, args []string) {

@@ -205,10 +205,15 @@ func hasTag(tags []string, want string) bool {
 	return false
 }
 
-// Get 按 ID 查找。
+// Get 按 ID 查找，支持前缀匹配（输入 ID 前几位即可）。
 func (s *Store) Get(id string) (Transaction, bool) {
 	for _, t := range s.data.Transactions {
 		if t.ID == id {
+			return t, true
+		}
+	}
+	for _, t := range s.data.Transactions {
+		if strings.HasPrefix(t.ID, id) {
 			return t, true
 		}
 	}
@@ -244,12 +249,12 @@ func (s *Store) Update(id string, amount float64, category, note string, tags []
 	return false
 }
 
-// Delete 删除一条记录。
+// Delete 删除一条记录，支持前缀匹配（输入 ID 前几位即可）。
 func (s *Store) Delete(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, t := range s.data.Transactions {
-		if t.ID == id {
+		if t.ID == id || strings.HasPrefix(t.ID, id) {
 			s.data.Transactions = append(s.data.Transactions[:i], s.data.Transactions[i+1:]...)
 			_ = s.save()
 			return true
