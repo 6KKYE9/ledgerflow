@@ -29,6 +29,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   balance    当前总余额       ledgerflow balance
   top        支出排行         ledgerflow top [-n 5]
   month      按月趋势         ledgerflow month
+  week       本周收支汇总     ledgerflow week
   chart      收支柱状图       ledgerflow chart
   categories 查看类别         ledgerflow categories
   tags       查看所有标签     ledgerflow tags
@@ -81,6 +82,8 @@ func main() {
 		cmdTagSum(st, args)
 	case "stats":
 		cmdStats(st)
+	case "week":
+		cmdWeek(st)
 	case "balance":
 		cmdBalance(st)
 	case "top":
@@ -412,6 +415,36 @@ func cmdTagSum(st *store.Store, args []string) {
 
 func cmdStats(st *store.Store) {
 	ui.PrintStats(st.Stats())
+}
+
+// cmdWeek 汇总本周（周一~周日）的收支与结余。
+func cmdWeek(st *store.Store) {
+	now := time.Now()
+	// 算出本周一 0 点：先取今天星期几（周日为 0），回退到周一
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	monday := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -(weekday - 1))
+	// 周日结束 = 周一 +7 天
+	items := st.List()
+	var inWeek []store.Transaction
+	for _, t := range items {
+		if !t.Date.Before(monday) && t.Date.Before(monday.AddDate(0, 0, 7)) {
+			inWeek = append(inWeek, t)
+		}
+	}
+	ui.Header()
+	ui.Info(fmt.Sprintf("本周（%s ~ %s）", monday.Format("2006-01-02"), monday.AddDate(0, 0, 6).Format("2006-01-02")))
+	if len(inWeek) == 0 {
+		ui.Info("本周还没有记账记录")
+		return
+	}
+	s := report.Build(inWeek)
+	fmt.Printf("  %s%s\n", ui.Bold+"收入: "+ui.Reset, ui.Green+report.FormatMoney(s.Income)+ui.Reset)
+	fmt.Printf("  %s%s\n", ui.Bold+"支出: "+ui.Reset, ui.Red+report.FormatMoney(s.Expense)+ui.Reset)
+	fmt.Printf("  %s%s\n", ui.Bold+"结余: "+ui.Reset, balanceColor(s.Balance)+report.FormatMoney(s.Balance)+ui.Reset)
+	ui.Info(fmt.Sprintf("本周 %d 笔记录", s.Count))
 }
 
 func cmdBalance(st *store.Store) {

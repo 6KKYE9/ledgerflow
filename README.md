@@ -104,6 +104,12 @@ ledgerflow summary -tag 旅行          # 按标签汇总
 ledgerflow month
 ```
 
+### 本周汇总
+
+```bash
+ledgerflow week
+```
+
 ### 收支柱状图
 
 ```bash
