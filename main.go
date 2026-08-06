@@ -21,6 +21,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
 命令:
   add        记录一笔收支     ledgerflow add -type expense -amount 38.5 -cat 餐饮 -note 午饭 -tag 日常
   list       查看记录         ledgerflow list [-cat 餐饮] [-type expense] [-month 2026-08] [-q 咖啡] [-tag 旅行]
+  recent     最近记录         ledgerflow recent [-n 10]
   summary    汇总统计         ledgerflow summary [-month 2026-08] [-tag 旅行]
   stats      整体总览         ledgerflow stats
   top        支出排行         ledgerflow top [-n 5]
@@ -66,6 +67,8 @@ func main() {
 		cmdAdd(st, args)
 	case "list":
 		cmdList(st, args)
+	case "recent":
+		cmdRecent(st, args)
 	case "summary":
 		cmdSummary(st, args)
 	case "stats":
@@ -156,6 +159,20 @@ func cmdList(st *store.Store, args []string) {
 	tag := fs.String("tag", "", "按标签筛选")
 	_ = fs.Parse(args)
 	items := st.Filter(*cat, *typ, *q, *tag, *month)
+	ui.Table(items)
+}
+
+func cmdRecent(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("recent", flag.ExitOnError)
+	n := fs.Int("n", 10, "显示最近 N 条记录")
+	_ = fs.Parse(args)
+	if *n <= 0 {
+		*n = 10
+	}
+	items := st.List()
+	if len(items) > *n {
+		items = items[:*n]
+	}
 	ui.Table(items)
 }
 
