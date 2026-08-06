@@ -31,6 +31,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   chart      收支柱状图       ledgerflow chart
   categories 查看类别         ledgerflow categories
   tags       查看所有标签     ledgerflow tags
+  tag        移除记录上的标签 ledgerflow tag -rm 旅行 <id...>
   budget     设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
   budget     查看全部月份预算 ledgerflow budget -list
   edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮 -tag 旅行
@@ -89,6 +90,8 @@ func main() {
 		cmdCategories(st)
 	case "tags":
 		cmdTags(st)
+	case "tag":
+		cmdTag(st, args)
 	case "budget":
 		cmdBudget(st, args)
 	case "edit":
@@ -594,6 +597,35 @@ func cmdTags(st *store.Store) {
 		return
 	}
 	ui.Info("全部标签（按使用频率）: " + strings.Join(tags, "、"))
+}
+
+// cmdTag 现在只支持一个子操作：把某条记录上的某个标签摘掉
+func cmdTag(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("tag", flag.ExitOnError)
+	rm := fs.String("rm", "", "要移除的标签名")
+	_ = fs.Parse(args)
+	if *rm == "" {
+		ui.Error("用法: ledgerflow tag -rm 标签名 <id...>")
+		return
+	}
+	ids := fs.Args()
+	if len(ids) == 0 {
+		ui.Error("请提供至少一条记录 ID")
+		return
+	}
+	ok, miss := 0, 0
+	for _, id := range ids {
+		if st.RemoveTag(id, *rm) {
+			ok++
+		} else {
+			miss++
+			ui.Error("没摘掉（记录不存在或本来就没这个标签）: " + id)
+		}
+	}
+	if ok > 0 {
+		ui.Success(fmt.Sprintf("已从 %d 条记录移除标签「%s」", ok, *rm))
+	}
+	_ = miss
 }
 
 func cmdReset(st *store.Store, args []string) {

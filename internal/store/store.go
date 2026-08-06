@@ -249,6 +249,34 @@ func (s *Store) Update(id string, amount float64, category, note string, tags []
 	return false
 }
 
+// RemoveTag 从某条记录上摘掉一个标签，返回是否真摘掉了（找到了记录且确实有这个标签）。
+func (s *Store) RemoveTag(id, tag string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Transactions {
+		t := &s.data.Transactions[i]
+		if t.ID != id && !strings.HasPrefix(t.ID, id) {
+			continue
+		}
+		kept := t.Tags[:0]
+		hit := false
+		for _, tg := range t.Tags {
+			if tg == tag {
+				hit = true
+				continue
+			}
+			kept = append(kept, tg)
+		}
+		if !hit {
+			return false
+		}
+		t.Tags = kept
+		_ = s.save()
+		return true
+	}
+	return false
+}
+
 // Delete 删除一条记录，支持前缀匹配（输入 ID 前几位即可）。
 func (s *Store) Delete(id string) bool {
 	s.mu.Lock()
