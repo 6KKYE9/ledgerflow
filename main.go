@@ -26,6 +26,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   summary    汇总统计         ledgerflow summary [-month 2026-08] [-tag 旅行]
   tagsum     按标签统计收支   ledgerflow tagsum [-month 2026-08]
   stats      整体总览         ledgerflow stats
+  balance    当前总余额       ledgerflow balance
   top        支出排行         ledgerflow top [-n 5]
   month      按月趋势         ledgerflow month
   chart      收支柱状图       ledgerflow chart
@@ -80,6 +81,8 @@ func main() {
 		cmdTagSum(st, args)
 	case "stats":
 		cmdStats(st)
+	case "balance":
+		cmdBalance(st)
 	case "top":
 		cmdTop(st, args)
 	case "month":
@@ -409,6 +412,17 @@ func cmdTagSum(st *store.Store, args []string) {
 
 func cmdStats(st *store.Store) {
 	ui.PrintStats(st.Stats())
+}
+
+func cmdBalance(st *store.Store) {
+	ui.Header()
+	s := st.Stats()
+	fmt.Printf("  %s%s\n", ui.Bold+"收入: "+ui.Reset, ui.Green+report.FormatMoney(s.Income)+ui.Reset)
+	fmt.Printf("  %s%s\n", ui.Bold+"支出: "+ui.Reset, ui.Red+report.FormatMoney(s.Expense)+ui.Reset)
+	fmt.Printf("  %s%s\n", ui.Bold+"余额: "+ui.Reset, balanceColor(s.Balance)+report.FormatMoney(s.Balance)+ui.Reset)
+	if s.Count == 0 {
+		ui.Info("还没有任何记录，先 add 一条吧")
+	}
 }
 
 func cmdTop(st *store.Store, args []string) {
