@@ -19,19 +19,24 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   ledgerflow <命令> [参数]
 
 命令:
-  add      记录一笔收支     ledgerflow add -type expense -amount 38.5 -cat 餐饮 -note 午饭
-  list     查看记录         ledgerflow list [-cat 餐饮] [-type expense] [-month 2026-08] [-q 咖啡]
-  summary  汇总统计         ledgerflow summary [-month 2026-08]
-  month    按月趋势         ledgerflow month
-  budget   设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
-  edit     修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮
-  del      删除记录         ledgerflow del <id>
-  export   导出 CSV         ledgerflow export -o ledger.csv
-  help     显示帮助
+  add        记录一笔收支     ledgerflow add -type expense -amount 38.5 -cat 餐饮 -note 午饭
+  list       查看记录         ledgerflow list [-cat 餐饮] [-type expense] [-month 2026-08] [-q 咖啡]
+  summary    汇总统计         ledgerflow summary [-month 2026-08]
+  month      按月趋势         ledgerflow month
+  chart      收支柱状图       ledgerflow chart
+  categories 查看类别         ledgerflow categories
+  budget     设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
+  edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮
+  del        删除记录         ledgerflow del <id>
+  export     导出数据         ledgerflow export -o data.csv [-f csv|json]
+  reset      清空所有数据     ledgerflow reset --yes
+  help       显示帮助
+
+金额支持简写: 1k=1000, 2.5w=25000, 3千=3000, 5万=50000
 
 示例:
-  ledgerflow add -type income -amount 8000 -cat 工资 -note 月薪
-  ledgerflow add -type expense -amount 12.5 -cat 交通 -note 地铁
+  ledgerflow add -type income -amount 8k -cat 工资 -note 月薪
+  ledgerflow add -type expense -amount 12.5 -cat 交通 -note 地铁 -repeat monthly
   ledgerflow summary -month 2026-08
 `
 
@@ -59,6 +64,10 @@ func main() {
 		cmdSummary(st, args)
 	case "month":
 		cmdMonth(st)
+	case "chart":
+		cmdChart(st)
+	case "categories":
+		cmdCategories(st)
 	case "budget":
 		cmdBudget(st, args)
 	case "edit":
@@ -67,6 +76,8 @@ func main() {
 		cmdDel(st, args)
 	case "export":
 		cmdExport(st, args)
+	case "reset":
+		cmdReset(st, args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -79,26 +90,40 @@ func main() {
 func cmdAdd(st *store.Store, args []string) {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	typ := fs.String("type", "", "类型: income(收入) 或 expense(支出)")
-	amount := fs.Float64("amount", 0, "金额")
+	amountStr := fs.String("amount", "", "金额，支持 1k/2.5w/3千/5万 简写")
 	cat := fs.String("cat", "", "类别，如 餐饮/交通/工资")
 	note := fs.String("note", "", "备注")
 	dateStr := fs.String("date", "", "日期 2006-01-02，缺省为今天")
+	repeat := fs.String("repeat", "", "重复方式: monthly（按月重复，生成未来 11 个月）")
 	_ = fs.Parse(args)
 
 	if *typ != "income" && *typ != "expense" {
 		ui.Error("请通过 -type 指定 income 或 expense")
 		return
 	}
-	if *amount <= 0 {
-		ui.Error("金额必须大于 0")
+	amount, err := parseAmount(*amountStr)
+	if err != nil || amount <= 0 {
+		ui.Error("金额无效，请通过 -amount 指定正数（支持 k/w/千/万 简写）")
 		return
 	}
 	if *cat == "" {
 		ui.Error("请通过 -cat 指定类别")
 		return
 	}
-	rec := st.Add(store.Type(*typ), *amount, *cat, *note, parseDate(*dateStr))
+	rp := ""
+	if *repeat == "monthly" {
+		rp = "monthly"
+	}
+	base := parseDate(*dateStr)
+	rec := st.Add(store.Type(*typ), amount, *cat, *note, base, rp)
 	ui.Success(fmt.Sprintf("已记录: %s %.2f (%s) [%s]", rec.Type, rec.Amount, rec.Category, rec.ID))
+	if rp == "monthly" {
+		for i := 1; i <= 11; i++ {
+			d := base.AddDate(0, i, 0)
+			st.Add(store.Type(*typ), amount, *cat, *note, d, rp)
+		}
+		ui.Info("已生成未来 11 个月的重复记录")
+	}
 	maybeBudgetAlert(st, rec.Date.Format("2006-01"))
 }
 
@@ -176,12 +201,21 @@ func cmdEdit(st *store.Store, args []string) {
 	}
 	id := args[0]
 	fs := flag.NewFlagSet("edit", flag.ExitOnError)
-	amount := fs.Float64("amount", -1, "新金额")
+	amountStr := fs.String("amount", "", "新金额（支持 k/w/千/万 简写）")
 	cat := fs.String("cat", "", "新类别")
 	note := fs.String("note", "", "新备注")
 	dateStr := fs.String("date", "", "新日期 2006-01-02")
 	_ = fs.Parse(args[1:])
-	if st.Update(id, *amount, *cat, *note, parseDate(*dateStr)) {
+	amount := -1.0
+	if *amountStr != "" {
+		v, err := parseAmount(*amountStr)
+		if err != nil || v <= 0 {
+			ui.Error("金额无效")
+			return
+		}
+		amount = v
+	}
+	if st.Update(id, amount, *cat, *note, parseDate(*dateStr)) {
 		ui.Success("已更新 " + id)
 	} else {
 		ui.Error("未找到记录 " + id)
@@ -203,12 +237,20 @@ func cmdDel(st *store.Store, args []string) {
 func cmdExport(st *store.Store, args []string) {
 	fs := flag.NewFlagSet("export", flag.ExitOnError)
 	out := fs.String("o", "ledger.csv", "输出文件路径")
+	fmtType := fs.String("f", "csv", "格式: csv 或 json")
 	_ = fs.Parse(args)
-	if err := st.ExportCSV(*out, st.List()); err != nil {
+	var err error
+	switch *fmtType {
+	case "json":
+		err = st.ExportJSON(*out, st.List())
+	default:
+		err = st.ExportCSV(*out, st.List())
+	}
+	if err != nil {
 		ui.Error("导出失败: " + err.Error())
 		return
 	}
-	ui.Success("已导出到 " + *out)
+	ui.Success("已导出 " + *fmtType + " 到 " + *out)
 }
 
 func maybeBudgetAlert(st *store.Store, month string) {
@@ -265,6 +307,69 @@ func pad(n int) string {
 
 func displayLen(s string) int {
 	return len([]rune(s))
+}
+
+// parseAmount 解析金额，支持 k/w/千/万 简写（如 1k、2.5w、3千、5万）。
+func parseAmount(s string) (float64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	mult := 1.0
+	last := s[len(s)-1:]
+	switch last {
+	case "k", "K":
+		mult = 1e3
+		s = s[:len(s)-1]
+	case "w", "W":
+		mult = 1e4
+		s = s[:len(s)-1]
+	case "千":
+		mult = 1e3
+		s = s[:len(s)-len("千")]
+	case "万":
+		mult = 1e4
+		s = s[:len(s)-len("万")]
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		return 0, err
+	}
+	return v * mult, nil
+}
+
+func cmdChart(st *store.Store) {
+	rows := report.ByMonth(st.List())
+	ui.Header()
+	ui.Info("最近月份收支柱状图（蓝=收入 红=支出）")
+	var income, expense []report.Bar
+	for _, r := range rows {
+		income = append(income, report.Bar{Label: r.Month, Value: r.Income, Color: ui.Cyan})
+		expense = append(expense, report.Bar{Label: r.Month, Value: r.Expense, Color: ui.Red})
+	}
+	fmt.Print(report.RenderBars(income, 10))
+	fmt.Print(report.RenderBars(expense, 10))
+}
+
+func cmdCategories(st *store.Store) {
+	ui.Header()
+	ui.Categories(st.Categories())
+	ui.Info("提示：使用 add -cat 可记录任意自定义类别")
+}
+
+func cmdReset(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("reset", flag.ExitOnError)
+	yes := fs.Bool("yes", false, "确认清空，不加此参数不会执行")
+	_ = fs.Parse(args)
+	if !*yes {
+		ui.Warn("此操作将删除全部记录与预算，确认请加 --yes 参数")
+		return
+	}
+	if err := st.Reset(); err != nil {
+		ui.Error("清空失败: " + err.Error())
+		return
+	}
+	ui.Success("已清空全部数据")
 }
 
 var _ = strconv.Itoa

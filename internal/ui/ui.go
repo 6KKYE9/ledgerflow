@@ -138,3 +138,15 @@ func displayWidth(s string) int {
 	}
 	return n
 }
+
+// Categories 打印类别清单。
+func Categories(groups map[string][]string) {
+	ui := func(title string, items []string, color string) {
+		if len(items) == 0 {
+			return
+		}
+		fmt.Println(color + "  " + title + Reset + ": " + strings.Join(items, "、"))
+	}
+	ui("收入", groups["income"], Green)
+	ui("支出", groups["expense"], Red)
+}

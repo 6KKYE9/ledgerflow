@@ -28,7 +28,14 @@ type Transaction struct {
 	Category string    `json:"category"`
 	Note     string    `json:"note"`
 	Date     time.Time `json:"date"`
+	Repeat   string    `json:"repeat,omitempty"` // "" | "monthly"
 	Created  time.Time `json:"created"`
+}
+
+// 预设类别，供快速选择参考。
+var DefaultCategories = map[string][]string{
+	"income":  {"工资", "奖金", "理财", "兼职", "其他收入"},
+	"expense": {"餐饮", "交通", "购物", "居住", "娱乐", "医疗", "教育", "其他支出"},
 }
 
 // Budget 表示某个月某个类别的预算上限（仅对支出生效）。
@@ -104,10 +111,14 @@ func (s *Store) save() error {
 	return os.Rename(tmp, s.path)
 }
 
-// Add 新增一条记录并返回它。
-func (s *Store) Add(t Type, amount float64, category, note string, date time.Time) Transaction {
+// Add 新增一条记录并返回它。可选的 repeat 参数可设为 "monthly"。
+func (s *Store) Add(t Type, amount float64, category, note string, date time.Time, repeat ...string) Transaction {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	rp := ""
+	if len(repeat) > 0 {
+		rp = repeat[0]
+	}
 	rec := Transaction{
 		ID:       newID(),
 		Type:     string(t),
@@ -115,6 +126,7 @@ func (s *Store) Add(t Type, amount float64, category, note string, date time.Tim
 		Category: category,
 		Note:     note,
 		Date:     date,
+		Repeat:   rp,
 		Created:  time.Now(),
 	}
 	s.data.Transactions = append(s.data.Transactions, rec)
@@ -230,6 +242,41 @@ func (s *Store) GetBudget(month string) (Budget, bool) {
 		}
 	}
 	return Budget{}, false
+}
+
+// Reset 清空全部记录与预算。
+func (s *Store) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = Data{}
+	return s.save()
+}
+
+// Categories 列出全部已用类别（去重），按类型分组返回。
+func (s *Store) Categories() map[string][]string {
+	seen := map[string]bool{}
+	out := map[string][]string{"income": {}, "expense": {}}
+	for _, t := range s.data.Transactions {
+		if seen[t.Category] {
+			continue
+		}
+		seen[t.Category] = true
+		if t.Type == "income" {
+			out["income"] = append(out["income"], t.Category)
+		} else {
+			out["expense"] = append(out["expense"], t.Category)
+		}
+	}
+	return out
+}
+
+// ExportJSON 将记录导出为 JSON 文件。
+func (s *Store) ExportJSON(path string, items []Transaction) error {
+	b, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }
 
 func contains(s, sub string) bool {
