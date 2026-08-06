@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   list       查看记录         ledgerflow list [-cat 餐饮] [-type expense] [-month 2026-08] [-q 咖啡] [-tag 旅行]
   recent     最近记录         ledgerflow recent [-n 10]
   summary    汇总统计         ledgerflow summary [-month 2026-08] [-tag 旅行]
+  tagsum     按标签统计收支   ledgerflow tagsum [-month 2026-08]
   stats      整体总览         ledgerflow stats
   top        支出排行         ledgerflow top [-n 5]
   month      按月趋势         ledgerflow month
@@ -71,6 +73,8 @@ func main() {
 		cmdRecent(st, args)
 	case "summary":
 		cmdSummary(st, args)
+	case "tagsum":
+		cmdTagSum(st, args)
 	case "stats":
 		cmdStats(st)
 	case "top":
@@ -295,6 +299,65 @@ func cmdDel(st *store.Store, args []string) {
 		ui.Success("已删除 " + fs.Args()[0])
 	} else {
 		ui.Error("未找到记录 " + fs.Args()[0])
+	}
+}
+
+func cmdTagSum(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("tagsum", flag.ExitOnError)
+	month := fs.String("month", "", "限定月份 2006-01")
+	_ = fs.Parse(args)
+	items := st.List()
+	if *month != "" {
+		items = st.Filter("", "", "", "", *month)
+	}
+	type agg struct {
+		income  float64
+		expense float64
+	}
+	byTag := map[string]*agg{}
+	var untaggedInc, untaggedExp float64
+	for _, t := range items {
+		if len(t.Tags) == 0 {
+			if t.Type == "income" {
+				untaggedInc += t.Amount
+			} else {
+				untaggedExp += t.Amount
+			}
+			continue
+		}
+		for _, tag := range t.Tags {
+			a, ok := byTag[tag]
+			if !ok {
+				a = &agg{}
+				byTag[tag] = a
+			}
+			if t.Type == "income" {
+				a.income += t.Amount
+			} else {
+				a.expense += t.Amount
+			}
+		}
+	}
+	ui.Header()
+	ui.Info("按标签收支汇总（收入 / 支出 / 净额）:")
+	tags := make([]string, 0, len(byTag))
+	for k := range byTag {
+		tags = append(tags, k)
+	}
+	sort.Strings(tags)
+	for _, tag := range tags {
+		a := byTag[tag]
+		net := a.income - a.expense
+		ui.Info(fmt.Sprintf("  %s  收入 %.2f / 支出 %.2f / 净额 %s%.2f%s",
+			tag, a.income, a.expense, balanceColor(net), net, ui.Reset))
+	}
+	if untaggedInc != 0 || untaggedExp != 0 {
+		net := untaggedInc - untaggedExp
+		ui.Info(fmt.Sprintf("  %s  收入 %.2f / 支出 %.2f / 净额 %s%.2f%s",
+			"(无标签)", untaggedInc, untaggedExp, balanceColor(net), net, ui.Reset))
+	}
+	if len(tags) == 0 && untaggedInc == 0 && untaggedExp == 0 {
+		ui.Info("暂无记录")
 	}
 }
 
