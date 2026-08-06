@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"ledgerflow/internal/report"
 	"ledgerflow/internal/store"
 )
 
@@ -50,7 +51,7 @@ func Table(items []store.Transaction) {
 		Info("暂无记录")
 		return
 	}
-	cols := []string{"日期", "类型", "金额", "类别", "备注", "ID"}
+	cols := []string{"日期", "类型", "金额", "类别", "标签", "备注", "ID"}
 	widths := columnWidths(items, cols)
 	printDivider(widths)
 	printRow(widths, cols, true)
@@ -66,7 +67,8 @@ func Table(items []store.Transaction) {
 		}
 		amount := color + fmt.Sprintf("%s%.2f", sign, t.Amount) + Reset
 		date := t.Date.Format("01-02")
-		printCells(widths, []string{date, typ, amount, t.Category, t.Note, t.ID})
+		tags := strings.Join(t.Tags, "、")
+		printCells(widths, []string{date, typ, amount, t.Category, tags, t.Note, t.ID})
 	}
 	printDivider(widths)
 	fmt.Printf(Gray+"  共 %d 条记录\n"+Reset, len(items))
@@ -87,7 +89,7 @@ func columnWidths(items []store.Transaction, cols []string) []int {
 				return "收入"
 			}(),
 			fmt.Sprintf("%+.2f", t.Amount),
-			t.Category, t.Note, t.ID,
+			t.Category, strings.Join(t.Tags, "、"), t.Note, t.ID,
 		}
 		for i, v := range check {
 			if d := displayWidth(v); d > w[i] {
@@ -150,3 +152,69 @@ func Categories(groups map[string][]string) {
 	ui("收入", groups["income"], Green)
 	ui("支出", groups["expense"], Red)
 }
+
+// PrintStats 打印整体统计概览。
+func PrintStats(st store.Stats) {
+	Header()
+	if st.Count == 0 {
+		Info("暂无数据，先用 add 记录一笔吧")
+		return
+	}
+	fmt.Printf("  %s%d\n", Bold+"记录数: "+Reset, st.Count)
+	fmt.Printf("  %s%s\n", Bold+"总收入: "+Reset, Green+report.FormatMoney(st.Income)+Reset)
+	fmt.Printf("  %s%s\n", Bold+"总支出: "+Reset, Red+report.FormatMoney(st.Expense)+Reset)
+	fmt.Printf("  %s%s%s\n", Bold+"净结余: "+Reset, balanceColor(st.Balance), report.FormatMoney(st.Balance)+Reset)
+	fmt.Printf("  %s%d 天\n", Bold+"记账天数: "+Reset, st.Days)
+	fmt.Printf("  %s%s 元/天\n", Bold+"日均支出: "+Reset, report.FormatMoney(st.AvgExpensePerDay))
+	fmt.Printf("  %s%s ~ %s\n", Bold+"首笔→末笔: "+Reset, st.FirstDate.Format("2006-01-02"), st.LastDate.Format("2006-01-02"))
+}
+
+// PrintTop 打印支出类别排行。
+func PrintTop(ranks []report.CategoryRank) {
+	Header()
+	if len(ranks) == 0 {
+		Info("暂无支出记录")
+		return
+	}
+	Info("支出类别排行（金额 / 笔数）")
+	var max float64
+	for _, r := range ranks {
+		if r.Amount > max {
+			max = r.Amount
+		}
+	}
+	if max <= 0 {
+		max = 1
+	}
+	for i, r := range ranks {
+		h := int((r.Amount / max) * 10)
+		if r.Amount > 0 && h == 0 {
+			h = 1
+		}
+		bar := strings.Repeat("█", h)
+		rank := fmt.Sprintf("%d.", i+1)
+		fmt.Printf("  %s%s%s %s   %s  (%d笔)\n",
+			Yellow+rank+Reset,
+			pad(2-displayWidth(rank)),
+			Red+bar+Reset,
+			r.Category,
+			report.FormatMoney(r.Amount),
+			r.Count,
+		)
+	}
+}
+
+func balanceColor(v float64) string {
+	if v >= 0 {
+		return Green
+	}
+	return Red
+}
+
+func pad(n int) string {
+	if n < 0 {
+		n = 0
+	}
+	return strings.Repeat(" ", n)
+}
+

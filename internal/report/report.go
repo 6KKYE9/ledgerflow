@@ -114,6 +114,39 @@ func Budget(items []store.Transaction, b store.Budget) BudgetStatus {
 	}
 }
 
+// CategoryRank 表示单个类别的金额排行。
+type CategoryRank struct {
+	Category string
+	Amount   float64
+	Count    int
+}
+
+// TopCategories 返回支出类别金额排行（降序），最多 limit 条；limit<=0 表示不限制。
+func TopCategories(items []store.Transaction, limit int) []CategoryRank {
+	m := map[string]*CategoryRank{}
+	for _, t := range items {
+		if t.Type != "expense" {
+			continue
+		}
+		r, ok := m[t.Category]
+		if !ok {
+			r = &CategoryRank{Category: t.Category}
+			m[t.Category] = r
+		}
+		r.Amount += t.Amount
+		r.Count++
+	}
+	out := make([]CategoryRank, 0, len(m))
+	for _, v := range m {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Amount > out[j].Amount })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
 // FormatMoney 统一金额格式。
 func FormatMoney(v float64) string {
 	return fmt.Sprintf("%.2f", v)

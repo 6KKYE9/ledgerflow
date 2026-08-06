@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,6 +30,7 @@ type Transaction struct {
 	Note     string    `json:"note"`
 	Date     time.Time `json:"date"`
 	Repeat   string    `json:"repeat,omitempty"` // "" | "monthly"
+	Tags     []string  `json:"tags,omitempty"`
 	Created  time.Time `json:"created"`
 }
 
@@ -51,6 +53,18 @@ type Data struct {
 	Budgets      []Budget      `json:"budgets"`
 }
 
+// Stats 描述整体统计概览。
+type Stats struct {
+	Count            int
+	Income           float64
+	Expense          float64
+	Balance          float64
+	Days             int
+	AvgExpensePerDay float64
+	FirstDate        time.Time
+	LastDate         time.Time
+}
+
 // Store 负责数据的加载、保存与查询。
 type Store struct {
 	mu   sync.Mutex
@@ -61,8 +75,9 @@ type Store struct {
 // New 在给定目录创建/打开存储文件 ledger.json。
 // 若 dir 为空，依次使用环境变量 LEDGERFLOW_HOME、用户主目录下的 .ledgerflow。
 func New(dir string) (*Store, error) {
+	dir = strings.TrimSpace(dir)
 	if dir == "" {
-		if env := os.Getenv("LEDGERFLOW_HOME"); env != "" {
+		if env := strings.TrimSpace(os.Getenv("LEDGERFLOW_HOME")); env != "" {
 			dir = env
 		} else {
 			home, err := os.UserHomeDir()
@@ -108,11 +123,18 @@ func (s *Store) save() error {
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	// 先尝试原子重命名；Windows 下目标已存在时 Rename 会失败，故回退为直接覆盖写入。
+	if err := os.Rename(tmp, s.path); err != nil {
+		if werr := os.WriteFile(s.path, b, 0o644); werr != nil {
+			return werr
+		}
+		_ = os.Remove(tmp)
+	}
+	return nil
 }
 
 // Add 新增一条记录并返回它。可选的 repeat 参数可设为 "monthly"。
-func (s *Store) Add(t Type, amount float64, category, note string, date time.Time, repeat ...string) Transaction {
+func (s *Store) Add(t Type, amount float64, category, note string, tags []string, date time.Time, repeat ...string) Transaction {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rp := ""
@@ -125,6 +147,7 @@ func (s *Store) Add(t Type, amount float64, category, note string, date time.Tim
 		Amount:   amount,
 		Category: category,
 		Note:     note,
+		Tags:     tags,
 		Date:     date,
 		Repeat:   rp,
 		Created:  time.Now(),
@@ -146,8 +169,9 @@ func (s *Store) List() []Transaction {
 	return out
 }
 
-// Filter 按类别、类型、关键字和月份筛选。空值表示不限制。
-func (s *Store) Filter(category, typ, keyword, month string) []Transaction {
+// Filter 按类别、类型、关键字、标签和月份筛选。空值表示不限制。
+// tag 为需要全部匹配的标签；传空表示不按标签限制。
+func (s *Store) Filter(category, typ, keyword, tag, month string) []Transaction {
 	all := s.List()
 	var out []Transaction
 	for _, t := range all {
@@ -163,9 +187,22 @@ func (s *Store) Filter(category, typ, keyword, month string) []Transaction {
 		if keyword != "" && !contains(t.Note, keyword) && !contains(t.Category, keyword) {
 			continue
 		}
+		if tag != "" && !hasTag(t.Tags, tag) {
+			continue
+		}
 		out = append(out, t)
 	}
 	return out
+}
+
+// hasTag 判断标签切片中是否包含给定标签。
+func hasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Get 按 ID 查找。
@@ -178,8 +215,8 @@ func (s *Store) Get(id string) (Transaction, bool) {
 	return Transaction{}, false
 }
 
-// Update 修改一条已有记录。
-func (s *Store) Update(id string, amount float64, category, note string, date time.Time) bool {
+// Update 修改一条已有记录。tags 非空时整体覆盖标签。
+func (s *Store) Update(id string, amount float64, category, note string, tags []string, date time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.data.Transactions {
@@ -193,6 +230,9 @@ func (s *Store) Update(id string, amount float64, category, note string, date ti
 			}
 			if note != "" {
 				t.Note = note
+			}
+			if tags != nil {
+				t.Tags = tags
 			}
 			if !date.IsZero() {
 				t.Date = date
@@ -265,6 +305,55 @@ func (s *Store) Categories() map[string][]string {
 			out["income"] = append(out["income"], t.Category)
 		} else {
 			out["expense"] = append(out["expense"], t.Category)
+		}
+	}
+	return out
+}
+
+// Stats 返回整体统计概览。
+func (s *Store) Stats() Stats {
+	items := s.data.Transactions
+	st := Stats{}
+	if len(items) == 0 {
+		return st
+	}
+	daySet := map[string]bool{}
+	var first, last time.Time
+	for i, t := range items {
+		if t.Type == "income" {
+			st.Income += t.Amount
+		} else {
+			st.Expense += t.Amount
+		}
+		daySet[t.Date.Format("2006-01-02")] = true
+		if i == 0 || t.Date.Before(first) {
+			first = t.Date
+		}
+		if i == 0 || t.Date.After(last) {
+			last = t.Date
+		}
+	}
+	st.Count = len(items)
+	st.Balance = st.Income - st.Expense
+	st.Days = len(daySet)
+	st.FirstDate = first
+	st.LastDate = last
+	if st.Days > 0 {
+		st.AvgExpensePerDay = st.Expense / float64(st.Days)
+	}
+	return st
+}
+
+// AllTags 返回所有出现过的标签（去重）。
+func (s *Store) AllTags() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range s.data.Transactions {
+		for _, tg := range t.Tags {
+			if !seen[tg] {
+				seen[tg] = true
+				out = append(out, tg)
+			}
 		}
 	}
 	return out

@@ -19,25 +19,30 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   ledgerflow <命令> [参数]
 
 命令:
-  add        记录一笔收支     ledgerflow add -type expense -amount 38.5 -cat 餐饮 -note 午饭
-  list       查看记录         ledgerflow list [-cat 餐饮] [-type expense] [-month 2026-08] [-q 咖啡]
-  summary    汇总统计         ledgerflow summary [-month 2026-08]
+  add        记录一笔收支     ledgerflow add -type expense -amount 38.5 -cat 餐饮 -note 午饭 -tag 日常
+  list       查看记录         ledgerflow list [-cat 餐饮] [-type expense] [-month 2026-08] [-q 咖啡] [-tag 旅行]
+  summary    汇总统计         ledgerflow summary [-month 2026-08] [-tag 旅行]
+  stats      整体总览         ledgerflow stats
+  top        支出排行         ledgerflow top [-n 5]
   month      按月趋势         ledgerflow month
   chart      收支柱状图       ledgerflow chart
   categories 查看类别         ledgerflow categories
   budget     设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
-  edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮
-  del        删除记录         ledgerflow del <id>
+  edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮 -tag 旅行
+  del        删除记录         ledgerflow del <id> | ledgerflow del --all --yes
+  import     导入 CSV 数据    ledgerflow import -o data.csv
   export     导出数据         ledgerflow export -o data.csv [-f csv|json]
   reset      清空所有数据     ledgerflow reset --yes
   help       显示帮助
 
 金额支持简写: 1k=1000, 2.5w=25000, 3千=3000, 5万=50000
+标签支持多个: -tag 旅行 -tag 团建   （导入/导出时以 | 分隔）
 
 示例:
   ledgerflow add -type income -amount 8k -cat 工资 -note 月薪
-  ledgerflow add -type expense -amount 12.5 -cat 交通 -note 地铁 -repeat monthly
+  ledgerflow add -type expense -amount 12.5 -cat 交通 -note 地铁 -tag 通勤 -repeat monthly
   ledgerflow summary -month 2026-08
+  ledgerflow top -n 5
 `
 
 func main() {
@@ -62,6 +67,10 @@ func main() {
 		cmdList(st, args)
 	case "summary":
 		cmdSummary(st, args)
+	case "stats":
+		cmdStats(st)
+	case "top":
+		cmdTop(st, args)
 	case "month":
 		cmdMonth(st)
 	case "chart":
@@ -74,6 +83,8 @@ func main() {
 		cmdEdit(st, args)
 	case "del":
 		cmdDel(st, args)
+	case "import":
+		cmdImport(st, args)
 	case "export":
 		cmdExport(st, args)
 	case "reset":
@@ -93,6 +104,8 @@ func cmdAdd(st *store.Store, args []string) {
 	amountStr := fs.String("amount", "", "金额，支持 1k/2.5w/3千/5万 简写")
 	cat := fs.String("cat", "", "类别，如 餐饮/交通/工资")
 	note := fs.String("note", "", "备注")
+	var tagSlice stringSlice
+	fs.Var(&tagSlice, "tag", "标签，可重复: -tag 旅行 -tag 团建；或以 | 分隔")
 	dateStr := fs.String("date", "", "日期 2006-01-02，缺省为今天")
 	repeat := fs.String("repeat", "", "重复方式: monthly（按月重复，生成未来 11 个月）")
 	_ = fs.Parse(args)
@@ -110,17 +123,21 @@ func cmdAdd(st *store.Store, args []string) {
 		ui.Error("请通过 -cat 指定类别")
 		return
 	}
+	tags := parseTags(strings.Join(tagSlice, "|"))
 	rp := ""
 	if *repeat == "monthly" {
 		rp = "monthly"
 	}
 	base := parseDate(*dateStr)
-	rec := st.Add(store.Type(*typ), amount, *cat, *note, base, rp)
+	rec := st.Add(store.Type(*typ), amount, *cat, *note, tags, base, rp)
 	ui.Success(fmt.Sprintf("已记录: %s %.2f (%s) [%s]", rec.Type, rec.Amount, rec.Category, rec.ID))
+	if len(rec.Tags) > 0 {
+		ui.Info("标签: " + strings.Join(rec.Tags, "、"))
+	}
 	if rp == "monthly" {
 		for i := 1; i <= 11; i++ {
 			d := base.AddDate(0, i, 0)
-			st.Add(store.Type(*typ), amount, *cat, *note, d, rp)
+			st.Add(store.Type(*typ), amount, *cat, *note, tags, d, rp)
 		}
 		ui.Info("已生成未来 11 个月的重复记录")
 	}
@@ -133,20 +150,25 @@ func cmdList(st *store.Store, args []string) {
 	typ := fs.String("type", "", "按类型筛选 income/expense")
 	month := fs.String("month", "", "按月份筛选 2006-01")
 	q := fs.String("q", "", "关键字搜索")
+	tag := fs.String("tag", "", "按标签筛选")
 	_ = fs.Parse(args)
-	items := st.Filter(*cat, *typ, *q, *month)
+	items := st.Filter(*cat, *typ, *q, *tag, *month)
 	ui.Table(items)
 }
 
 func cmdSummary(st *store.Store, args []string) {
 	fs := flag.NewFlagSet("summary", flag.ExitOnError)
 	month := fs.String("month", "", "按月汇总 2006-01，缺省为全部")
+	tag := fs.String("tag", "", "按标签汇总")
 	_ = fs.Parse(args)
 	var items []store.Transaction
 	if *month == "" {
 		items = st.List()
 	} else {
-		items = st.Filter("", "", "", *month)
+		items = st.Filter("", "", "", "", *month)
+	}
+	if *tag != "" {
+		items = st.Filter("", "", "", *tag, "")
 	}
 	s := report.Build(items)
 	ui.Header()
@@ -204,6 +226,8 @@ func cmdEdit(st *store.Store, args []string) {
 	amountStr := fs.String("amount", "", "新金额（支持 k/w/千/万 简写）")
 	cat := fs.String("cat", "", "新类别")
 	note := fs.String("note", "", "新备注")
+	var tagSlice stringSlice
+	fs.Var(&tagSlice, "tag", "新标签（整体覆盖，可重复或 | 分隔）")
 	dateStr := fs.String("date", "", "新日期 2006-01-02")
 	_ = fs.Parse(args[1:])
 	amount := -1.0
@@ -215,7 +239,11 @@ func cmdEdit(st *store.Store, args []string) {
 		}
 		amount = v
 	}
-	if st.Update(id, amount, *cat, *note, parseDate(*dateStr)) {
+	tags := []string(nil)
+	if len(tagSlice) > 0 {
+		tags = parseTags(strings.Join(tagSlice, "|"))
+	}
+	if st.Update(id, amount, *cat, *note, tags, parseDate(*dateStr)) {
 		ui.Success("已更新 " + id)
 	} else {
 		ui.Error("未找到记录 " + id)
@@ -223,15 +251,62 @@ func cmdEdit(st *store.Store, args []string) {
 }
 
 func cmdDel(st *store.Store, args []string) {
-	if len(args) < 1 {
-		ui.Error("请提供记录 ID")
+	fs := flag.NewFlagSet("del", flag.ExitOnError)
+	all := fs.Bool("all", false, "删除全部记录（需配合 --yes）")
+	yes := fs.Bool("yes", false, "确认删除")
+	_ = fs.Parse(args)
+	if *all {
+		if !*yes {
+			ui.Warn("将删除全部记录，确认请加 --yes")
+			return
+		}
+		if err := st.Reset(); err != nil {
+			ui.Error("清空失败: " + err.Error())
+			return
+		}
+		ui.Success("已删除全部记录")
 		return
 	}
-	if st.Delete(args[0]) {
-		ui.Success("已删除 " + args[0])
-	} else {
-		ui.Error("未找到记录 " + args[0])
+	if len(fs.Args()) < 1 {
+		ui.Error("请提供记录 ID，或使用 --all --yes 删除全部")
+		return
 	}
+	if st.Delete(fs.Args()[0]) {
+		ui.Success("已删除 " + fs.Args()[0])
+	} else {
+		ui.Error("未找到记录 " + fs.Args()[0])
+	}
+}
+
+func cmdStats(st *store.Store) {
+	ui.PrintStats(st.Stats())
+}
+
+func cmdTop(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("top", flag.ExitOnError)
+	n := fs.Int("n", 5, "显示前 N 个类别")
+	month := fs.String("month", "", "限定月份 2006-01")
+	_ = fs.Parse(args)
+	var items []store.Transaction
+	if *month == "" {
+		items = st.List()
+	} else {
+		items = st.Filter("", "", "", "", *month)
+	}
+	ranks := report.TopCategories(items, *n)
+	ui.PrintTop(ranks)
+}
+
+func cmdImport(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("import", flag.ExitOnError)
+	out := fs.String("o", "ledger.csv", "待导入的 CSV 文件路径（与 export 格式一致）")
+	_ = fs.Parse(args)
+	imported, skipped, err := st.ImportCSV(*out)
+	if err != nil {
+		ui.Error("导入失败: " + err.Error())
+		return
+	}
+	ui.Success(fmt.Sprintf("导入完成：成功 %d 条，跳过 %d 条（来源 %s）", imported, skipped, *out))
 }
 
 func cmdExport(st *store.Store, args []string) {
@@ -307,6 +382,34 @@ func pad(n int) string {
 
 func displayLen(s string) int {
 	return len([]rune(s))
+}
+
+// stringSlice 是一个可重复使用的命令行标志值（如 -tag a -tag b）。
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// parseTags 解析标签参数，支持重复 -tag 或单个以 | 分隔的字符串。
+func parseTags(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	// 支持以 | 或 、 或 , 分隔的一次性写法
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '|' || r == '、' || r == ','
+	})
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // parseAmount 解析金额，支持 k/w/千/万 简写（如 1k、2.5w、3千、5万）。
