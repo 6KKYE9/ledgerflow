@@ -289,6 +289,16 @@ func (s *Store) GetBudget(month string) (Budget, bool) {
 	return Budget{}, false
 }
 
+// ListBudgets 返回全部已设置的预算，按月份升序排列。
+func (s *Store) ListBudgets() []Budget {
+	out := make([]Budget, len(s.data.Budgets))
+	copy(out, s.data.Budgets)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Month < out[j].Month
+	})
+	return out
+}
+
 // Reset 清空全部记录与预算。
 func (s *Store) Reset() error {
 	s.mu.Lock()

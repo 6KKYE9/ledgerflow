@@ -32,6 +32,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   categories 查看类别         ledgerflow categories
   tags       查看所有标签     ledgerflow tags
   budget     设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
+  budget     查看全部月份预算 ledgerflow budget -list
   edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮 -tag 旅行
   del        删除记录         ledgerflow del <id> | ledgerflow del --all --yes
   import     导入 CSV 数据    ledgerflow import -o data.csv
@@ -225,7 +226,29 @@ func cmdBudget(st *store.Store, args []string) {
 	month := fs.String("month", report.NowMonth(), "月份 2006-01")
 	limit := fs.Float64("limit", 0, "预算上限")
 	alert := fs.Float64("alert", 0.8, "提醒比例 0~1")
+	listAll := fs.Bool("list", false, "列出全部已设置的月份预算")
 	_ = fs.Parse(args)
+	if *listAll {
+		budgets := st.ListBudgets()
+		ui.Header()
+		if len(budgets) == 0 {
+			ui.Info("尚未设置任何预算，使用 budget -month 2026-08 -limit 3000 来设置")
+			return
+		}
+		ui.Info(fmt.Sprintf("已设置 %d 个月份的预算:", len(budgets)))
+		for _, b := range budgets {
+			bs := report.Budget(st.List(), b)
+			status := "正常"
+			if bs.OverBudget {
+				status = ui.Red + "超支" + ui.Reset
+			} else if bs.NeedAlert {
+				status = ui.Yellow + "预警" + ui.Reset
+			}
+			ui.Info(fmt.Sprintf("  %s  上限 %.2f / 已用 %.2f (%s)  [%s]",
+				b.Month, b.Limit, bs.Spent, fmt.Sprintf("%.0f%%", bs.UsedRatio*100), status))
+		}
+		return
+	}
 	if *limit <= 0 {
 		b, ok := st.GetBudget(*month)
 		if !ok {
