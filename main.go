@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -152,17 +153,31 @@ func cmdAdd(st *store.Store, args []string) {
 		rp = "monthly"
 	}
 	base := parseDate(*dateStr)
-	rec := st.Add(store.Type(*typ), amount, *cat, *note, tags, base, rp)
+	rec, err := st.Add(store.Type(*typ), amount, *cat, *note, tags, base, rp)
+	if err != nil {
+		// 原来 Add 不返回错误，save() 失败被静默吞掉：
+		// 磁盘满时照样打印"已记录"，用户以为记上了，其实什么都没写。
+		ui.Error("记录失败: " + err.Error())
+		os.Exit(1)
+	}
 	ui.Success(fmt.Sprintf("已记录: %s %.2f (%s) [%s]", rec.Type, rec.Amount, rec.Category, rec.ID))
 	if len(rec.Tags) > 0 {
 		ui.Info("标签: " + strings.Join(rec.Tags, "、"))
 	}
 	if rp == "monthly" {
+		n := 0
 		for i := 1; i <= 11; i++ {
-			d := base.AddDate(0, i, 0)
-			st.Add(store.Type(*typ), amount, *cat, *note, tags, d, rp)
+			// AddDate 对月末有个反直觉行为：1-31 加一个月得到 3-2 或 3-3
+			// （因为 2 月没有 31 号，会往后溢出）。这里改成落到目标月的最后一天，
+			// 「每月 31 号的房租」不会莫名跑到 3 月初去。
+			d := addMonthsClamped(base, i)
+			if _, err := st.Add(store.Type(*typ), amount, *cat, *note, tags, d, rp); err != nil {
+				ui.Error(fmt.Sprintf("第 %d 个月的重复记录写入失败: %v", i, err))
+				break
+			}
+			n++
 		}
-		ui.Info("已生成未来 11 个月的重复记录")
+		ui.Info(fmt.Sprintf("已生成未来 %d 个月的重复记录", n))
 	}
 	maybeBudgetAlert(st, rec.Date.Format("2006-01"))
 }
@@ -271,7 +286,13 @@ func cmdBudget(st *store.Store, args []string) {
 		printBudget(bs)
 		return
 	}
-	st.SetBudget(*month, *limit, *alert)
+	// 原来这里是裸调用 st.SetBudget(...)，返回值被完全丢掉：
+	// -month 2026-13 或 -alert 80（本意 80%）都会被"设置成功"，
+	// 之后永远匹配不到任何记录 / 永远不提醒，用户毫不知情。
+	if err := st.SetBudget(*month, *limit, *alert); err != nil {
+		ui.Error("设置预算失败: " + err.Error())
+		os.Exit(1)
+	}
 	ui.Success(fmt.Sprintf("已设置 %s 预算上限 %.2f，提醒比例 %.0f%%", *month, *limit, *alert*100))
 }
 
@@ -302,11 +323,17 @@ func cmdEdit(st *store.Store, args []string) {
 	if len(tagSlice) > 0 {
 		tags = parseTags(strings.Join(tagSlice, "|"))
 	}
-	if st.Update(id, amount, *cat, *note, tags, parseDate(*dateStr)) {
-		ui.Success("已更新 " + id)
-	} else {
-		ui.Error("未找到记录 " + id)
+	// parseDate("") 原来返回今天，于是 edit 不带 -date 也会把日期改成今天。
+	// 这里必须区分"没给日期"和"给了日期"。
+	var newDate time.Time
+	if *dateStr != "" {
+		newDate = parseDate(*dateStr)
 	}
+	if err := st.Update(id, amount, *cat, *note, tags, newDate); err != nil {
+		ui.Error("更新失败: " + err.Error())
+		os.Exit(1)
+	}
+	ui.Success("已更新 " + id)
 }
 
 func cmdRename(st *store.Store, args []string) {
@@ -318,7 +345,11 @@ func cmdRename(st *store.Store, args []string) {
 		ui.Error("用法: ledgerflow rename -from 旧类别 -to 新类别")
 		return
 	}
-	n := st.RenameCategory(*from, *to)
+	n, err := st.RenameCategory(*from, *to)
+	if err != nil {
+		ui.Error("改名失败: " + err.Error())
+		os.Exit(1)
+	}
 	if n == 0 {
 		ui.Info("没找到任何「" + *from + "」的记录，没改")
 		return
@@ -347,11 +378,11 @@ func cmdDel(st *store.Store, args []string) {
 		ui.Error("请提供记录 ID，或使用 --all --yes 删除全部")
 		return
 	}
-	if st.Delete(fs.Args()[0]) {
-		ui.Success("已删除 " + fs.Args()[0])
-	} else {
-		ui.Error("未找到记录 " + fs.Args()[0])
+	if err := st.Delete(fs.Args()[0]); err != nil {
+		ui.Error("删除失败: " + err.Error())
+		os.Exit(1)
 	}
+	ui.Success("已删除 " + fs.Args()[0])
 }
 
 func cmdTagSum(st *store.Store, args []string) {
@@ -491,11 +522,16 @@ func cmdExport(st *store.Store, args []string) {
 	fmtType := fs.String("f", "csv", "格式: csv 或 json")
 	_ = fs.Parse(args)
 	var err error
-	switch *fmtType {
+	switch strings.ToLower(*fmtType) {
 	case "json":
 		err = st.ExportJSON(*out, st.List())
-	default:
+	case "csv":
 		err = st.ExportCSV(*out, st.List())
+	default:
+		// 原来是 default 走 CSV：-f jsonn 这种手滑会静默导出成 CSV，
+		// 文件名却还是 .json，后续解析必然失败且看不出原因。
+		ui.Error("不支持的格式 " + *fmtType + "，可选 csv 或 json")
+		os.Exit(1)
 	}
 	if err != nil {
 		ui.Error("导出失败: " + err.Error())
@@ -540,6 +576,32 @@ func parseDate(s string) time.Time {
 		return time.Now()
 	}
 	return d
+}
+
+// addMonthsClamped 在 base 上加 n 个月，并把日期钳制在目标月份的最后一天。
+//
+// time.Time.AddDate 对月末是溢出语义：2026-01-31 加 1 个月会得到 2026-03-03，
+// 因为 2 月没有 31 号。对"每月 31 号的房租"这类重复记账来说，
+// 这会让记录莫名跑到下下个月，统计和预算全部错位。
+// 这里改成钳制：2026-01-31 + 1 个月 = 2026-02-28（闰年则 02-29）。
+func addMonthsClamped(base time.Time, n int) time.Time {
+	y, m, d := base.Date()
+	// 先把日定为 1 号做月份运算，避免 AddDate 内部的规范化溢出。
+	first := time.Date(y, m, 1, base.Hour(), base.Minute(), base.Second(),
+		base.Nanosecond(), base.Location())
+	target := first.AddDate(0, n, 0)
+	last := daysInMonth(target.Year(), target.Month())
+	if d > last {
+		d = last
+	}
+	return time.Date(target.Year(), target.Month(), d, base.Hour(), base.Minute(),
+		base.Second(), base.Nanosecond(), base.Location())
+}
+
+// daysInMonth 返回指定年月的天数（自动处理闰年 2 月）。
+func daysInMonth(year int, m time.Month) int {
+	// 下个月的第 0 天 = 本月最后一天。
+	return time.Date(year, m+1, 0, 0, 0, 0, 0, time.UTC).Day()
 }
 
 func balanceColor(v float64) string {
@@ -588,33 +650,53 @@ func parseTags(s string) []string {
 	return out
 }
 
-// parseAmount 解析金额，支持 k/w/千/万 简写（如 1k、2.5w、3千、5万）。
+// parseAmount 解析金额，支持 k/w/千/万/亿 简写（如 1k、2.5w、3千、5万）。
+//
+// 原实现用 s[len(s)-1:] 取"最后一个字符"，那其实是最后一个**字节**。
+// "千"/"万" 在 UTF-8 里各占 3 字节，取到的是它们的末字节（0x83/0x87），
+// 永远匹配不上 case "千" / case "万" —— 也就是说这两个后缀从来没生效过，
+// 输入 "3千" 会直接掉到 ParseFloat 报错，README 里宣传的功能是坏的。
+// 这里改成按 rune 取末字符。
 func parseAmount(s string) (float64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, fmt.Errorf("empty")
+		return 0, fmt.Errorf("金额不能为空")
 	}
+	// 容忍千位分隔符和货币符号，粘贴过来的金额也能用。
+	s = strings.NewReplacer(",", "", "，", "", "￥", "", "¥", "", "$", "", " ", "").Replace(s)
+	if s == "" {
+		return 0, fmt.Errorf("金额不能为空")
+	}
+
+	r := []rune(s)
 	mult := 1.0
-	last := s[len(s)-1:]
-	switch last {
-	case "k", "K":
+	switch r[len(r)-1] {
+	case 'k', 'K', '千':
 		mult = 1e3
-		s = s[:len(s)-1]
-	case "w", "W":
+		r = r[:len(r)-1]
+	case 'w', 'W', '万':
 		mult = 1e4
-		s = s[:len(s)-1]
-	case "千":
-		mult = 1e3
-		s = s[:len(s)-len("千")]
-	case "万":
-		mult = 1e4
-		s = s[:len(s)-len("万")]
+		r = r[:len(r)-1]
+	case '亿':
+		mult = 1e8
+		r = r[:len(r)-1]
 	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	body := strings.TrimSpace(string(r))
+	if body == "" {
+		return 0, fmt.Errorf("金额缺少数字部分: %q", s)
+	}
+
+	v, err := strconv.ParseFloat(body, 64)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("无法解析金额 %q", s)
 	}
-	return v * mult, nil
+	v *= mult
+	// ParseFloat 认 "NaN"/"Inf"/"1e400"，这些一旦入账，
+	// 之后所有汇总都会变成 NaN 且再也救不回来。
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("金额不是有限数: %q", s)
+	}
+	return v, nil
 }
 
 func cmdChart(st *store.Store) {
@@ -662,17 +744,19 @@ func cmdTag(st *store.Store, args []string) {
 	}
 	ok, miss := 0, 0
 	for _, id := range ids {
-		if st.RemoveTag(id, *rm) {
-			ok++
-		} else {
+		if err := st.RemoveTag(id, *rm); err != nil {
 			miss++
-			ui.Error("没摘掉（记录不存在或本来就没这个标签）: " + id)
+			ui.Error(fmt.Sprintf("%s: %v", id, err))
+			continue
 		}
+		ok++
 	}
 	if ok > 0 {
 		ui.Success(fmt.Sprintf("已从 %d 条记录移除标签「%s」", ok, *rm))
 	}
-	_ = miss
+	if miss > 0 && ok == 0 {
+		os.Exit(1)
+	}
 }
 
 func cmdReset(st *store.Store, args []string) {

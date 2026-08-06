@@ -60,6 +60,14 @@ ledgerflow add -type expense -amount 1200 -cat 旅行 -note 机票 -tag 旅行 -
 ledgerflow add -type income -amount 8k -cat 工资      # 8000
 ledgerflow add -type expense -amount 2.5w -cat 房租   # 25000
 ledgerflow add -type expense -amount 3千 -cat 购物     # 3000
+ledgerflow add -type income -amount 1亿 -cat 中奖      # 100000000
+```
+
+粘贴过来的金额也能直接用，千位分隔符与货币符号会被自动忽略：
+
+```bash
+ledgerflow add -type expense -amount "1,234.56" -cat 餐饮
+ledgerflow add -type income  -amount ￥8000 -cat 工资
 ```
 
 ### 重复记账（月度）
@@ -68,6 +76,9 @@ ledgerflow add -type expense -amount 3千 -cat 购物     # 3000
 # 生成本月及未来 11 个月的房租记录
 ledgerflow add -type expense -amount 2.5w -cat 房租 -repeat monthly
 ```
+
+日期落在月末时会被钳制到目标月份的最后一天：
+1 月 31 号的房租，2 月记在 28 号（闰年 29 号），而不是溢出到 3 月初。
 
 ### 查看记录
 
@@ -147,6 +158,17 @@ ledgerflow export -o ledger.json -f json # JSON 格式
 ledgerflow import -o ledger.csv          # 从导出的 CSV 导入恢复
 ```
 
+导出的 CSV 带 UTF-8 BOM，Excel 直接打开中文不乱码。
+
+导入端做了较宽松的容错，从别的工具导出的表通常也能直接吃下：
+
+- 列名支持中英文两套（`日期`/`date`、`金额`/`amount` …）
+- 日期支持 `2026-03-15`、`2026/3/5`、`2026.03.15`、`20260315` 等写法
+- 金额可带千位分隔符与货币符号（`1,234.56`、`￥800`）
+- 行尾缺列或多列不会导致整个文件读取失败
+- 非法行（坏日期 / 非正金额 / 空类别）逐行跳过并计入"跳过"数
+- ID 与已有记录冲突时自动重新生成，不会产生重复 ID
+
 ### 清空数据
 
 ```bash
@@ -163,11 +185,48 @@ export LEDGERFLOW_HOME=/path/to/data
 ledgerflow list
 ```
 
+## 数据安全
+
+账本文件采用原子写：先写同目录下的临时文件，`fsync` 落盘后再 `rename` 覆盖目标。
+写入过程中断电或磁盘写满，都不会把已有账本损坏成半截文件。
+导出（CSV / JSON）走同一套机制，失败的导出不会破坏上一次的导出结果。
+
+所有写操作（新增 / 修改 / 删除 / 改类别名 / 设预算 / 导入）都会把磁盘错误往上报，
+并把内存状态回滚到与磁盘一致；不会出现"提示成功但其实没存下"的情况。
+
+## 已修复的问题
+
+这一轮改进修掉的都是能被测试稳定复现的真实缺陷：
+
+| 问题 | 影响 |
+| --- | --- |
+| `-amount 3千` / `5万` 从未生效 | 取的是末**字节**而非末字符，中文单位后缀永远匹配不上，README 宣传的功能是坏的 |
+| 空 ID 会命中第一条记录 | `strings.HasPrefix(x, "")` 恒为 true，`del ""` 真的会删掉一条数据 |
+| ID 前缀命中多条时随便挑一条 | `edit` / `del` 这类破坏性操作等于随机改一条记录 |
+| 写盘失败被静默吞掉 | 磁盘满时照样打印"已记录"，重启后数据不见了 |
+| 非原子写 + Windows 下回退成覆盖写 | 写到一半崩溃会把整个账本弄丢（`os.Rename` 在 Windows 上其实能覆盖，那个回退分支是多余且有害的） |
+| `RemoveTag` 原地过滤 | 复用底层数组，把调用方手里的 `[a b c]` 改成了 `[a c c]` |
+| `Add` / `Get` / `List` 与内部共享 slice | 调用方改自己的标签会静默污染已存数据 |
+| 负数 / `NaN` / `Inf` 金额能入账 | 一旦写进去，之后所有汇总永久变成 `NaN` 或负数 |
+| `budget -month 2026-13` 设置"成功" | 返回值被丢弃，非法月份永远匹配不到记录，等于白设 |
+| `-alert 80`（本意 80%）被接受 | 阈值是 0~1 的比例，写 80 会导致永远不提醒 |
+| `edit` 不带 `-date` 会把日期改成今天 | `parseDate("")` 返回今天，没法区分"没给"和"给了" |
+| `-repeat monthly` 月末溢出 | 1 月 31 号的房租会跑到 3 月初，统计和预算全部错位 |
+| 浮点累加误差 | 100 笔 0.01 汇总出 `1.0000000000000007`，"正好用完预算"被判成超支 |
+| 所有读方法不加锁 | 与写并发时会读到撕裂的数据 |
+| 同名类别只出现在一种类型下 | `Categories` 用了共享的去重表 |
+| 排行 / 榜单顺序每次都变 | 金额并列时靠 map 随机遍历顺序决定名次 |
+| 关键字搜索大小写敏感 | 搜 `starbucks` 找不到 `Starbucks` |
+| `export -f jsonn` 静默导出成 CSV | 手滑的格式名走 `default` 分支，文件名却还是 `.json` |
+| 导入把 BOM 当成列名的一部分 | 自己导出的 CSV 再导入时 ID 列永远读不到 |
+
 ## 测试
 
 ```bash
 go test ./...
 ```
+
+73 个测试，覆盖上表中的每一项（改动前均可稳定复现失败）。
 
 ## License
 

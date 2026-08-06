@@ -11,7 +11,7 @@ import (
 // Summary 汇总某段时间内的收支情况。
 type Summary struct {
 	Income      float64
-	Expense    float64
+	Expense     float64
 	Balance     float64
 	Count       int
 	ByCategory  map[string]float64
@@ -32,11 +32,22 @@ func Build(items []store.Transaction) Summary {
 			s.ByCategory[t.Category] += t.Amount
 		}
 	}
-	s.Balance = s.Income - s.Expense
+	// 浮点累加会留下 1.0000000000000007 这样的尾巴，
+	// 汇总后统一规整到分，避免 "%.2f" 之外的地方（比如比较、判超预算）出偏差。
+	s.Income = store.RoundMoney(s.Income)
+	s.Expense = store.RoundMoney(s.Expense)
+	s.Balance = store.RoundMoney(s.Income - s.Expense)
+	for c, v := range s.ByCategory {
+		s.ByCategory[c] = store.RoundMoney(v)
+	}
+
+	// 原来直接遍历 map 找最大值：金额相同的两个类别，
+	// 每次运行 TopCategory 可能不一样（Go 的 map 遍历顺序是随机的）。
+	// 现在金额相同时按类别名取字典序小的那个，输出稳定可复现。
 	top := ""
 	var max float64
 	for c, v := range s.ByCategory {
-		if v > max {
+		if v > max || (v == max && top != "" && c < top) {
 			max = v
 			top = c
 		}
@@ -47,10 +58,10 @@ func Build(items []store.Transaction) Summary {
 
 // Monthly 返回按月份的收支序列，已排序。
 type Monthly struct {
-	Month    string
-	Income   float64
-	Expense  float64
-	Balance  float64
+	Month   string
+	Income  float64
+	Expense float64
+	Balance float64
 }
 
 // ByMonth 把记录按月份聚合。
@@ -72,6 +83,9 @@ func ByMonth(items []store.Transaction) []Monthly {
 	}
 	out := make([]Monthly, 0, len(m))
 	for _, v := range m {
+		v.Income = store.RoundMoney(v.Income)
+		v.Expense = store.RoundMoney(v.Expense)
+		v.Balance = store.RoundMoney(v.Income - v.Expense)
 		out = append(out, *v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Month < out[j].Month })
@@ -98,6 +112,9 @@ func Budget(items []store.Transaction, b store.Budget) BudgetStatus {
 			spent += t.Amount
 		}
 	}
+	// 先规整到分再算比例：否则 100 笔 0.01 累加出来的 1.0000000000000007
+	// 会让"正好用完预算"被判成超支。
+	spent = store.RoundMoney(spent)
 	ratio := 0.0
 	if b.Limit > 0 {
 		ratio = spent / b.Limit
@@ -106,7 +123,7 @@ func Budget(items []store.Transaction, b store.Budget) BudgetStatus {
 		Month:      b.Month,
 		Limit:      b.Limit,
 		Spent:      spent,
-		Remaining:  b.Limit - spent,
+		Remaining:  store.RoundMoney(b.Limit - spent),
 		UsedRatio:  ratio,
 		AlertAt:    b.AlertAt,
 		OverBudget: spent > b.Limit,
@@ -138,9 +155,17 @@ func TopCategories(items []store.Transaction, limit int) []CategoryRank {
 	}
 	out := make([]CategoryRank, 0, len(m))
 	for _, v := range m {
+		v.Amount = store.RoundMoney(v.Amount)
 		out = append(out, *v)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Amount > out[j].Amount })
+	// 金额相同的类别原来靠 map 遍历顺序决定名次，每次跑 top 榜单顺序都可能变。
+	// 加上类别名做次级排序键，结果就稳定了。
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Amount != out[j].Amount {
+			return out[i].Amount > out[j].Amount
+		}
+		return out[i].Category < out[j].Category
+	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
