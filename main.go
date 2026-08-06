@@ -34,6 +34,7 @@ const usage = `LedgerFlow - 个人记账与财务追踪
   budget     设置/查看预算   ledgerflow budget -month 2026-08 -limit 3000 -alert 0.8
   budget     查看全部月份预算 ledgerflow budget -list
   edit       修改记录         ledgerflow edit <id> -amount 40 -cat 餐饮 -tag 旅行
+  rename     类别改名         ledgerflow rename -from 餐饮 -to 吃饭
   del        删除记录         ledgerflow del <id> | ledgerflow del --all --yes
   import     导入 CSV 数据    ledgerflow import -o data.csv
   export     导出数据         ledgerflow export -o data.csv [-f csv|json]
@@ -92,6 +93,8 @@ func main() {
 		cmdBudget(st, args)
 	case "edit":
 		cmdEdit(st, args)
+	case "rename":
+		cmdRename(st, args)
 	case "del":
 		cmdDel(st, args)
 	case "import":
@@ -295,6 +298,23 @@ func cmdEdit(st *store.Store, args []string) {
 	} else {
 		ui.Error("未找到记录 " + id)
 	}
+}
+
+func cmdRename(st *store.Store, args []string) {
+	fs := flag.NewFlagSet("rename", flag.ExitOnError)
+	from := fs.String("from", "", "原类别名")
+	to := fs.String("to", "", "新类别名")
+	_ = fs.Parse(args)
+	if *from == "" || *to == "" {
+		ui.Error("用法: ledgerflow rename -from 旧类别 -to 新类别")
+		return
+	}
+	n := st.RenameCategory(*from, *to)
+	if n == 0 {
+		ui.Info("没找到任何「" + *from + "」的记录，没改")
+		return
+	}
+	ui.Success(fmt.Sprintf("已把 %d 条「%s」改成「%s」", n, *from, *to))
 }
 
 func cmdDel(st *store.Store, args []string) {

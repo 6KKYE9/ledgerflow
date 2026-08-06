@@ -307,6 +307,27 @@ func (s *Store) Reset() error {
 	return s.save()
 }
 
+// RenameCategory 把所有某旧类别的记录改成新名字，返回改了几条。
+// 顺手把预算里同月份的旧类别也搬过去（预算按类别存的话）——目前预算按月不分类别，所以只动记录。
+func (s *Store) RenameCategory(old, new string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if old == "" || new == "" || old == new {
+		return 0
+	}
+	n := 0
+	for i := range s.data.Transactions {
+		if s.data.Transactions[i].Category == old {
+			s.data.Transactions[i].Category = new
+			n++
+		}
+	}
+	if n > 0 {
+		_ = s.save()
+	}
+	return n
+}
+
 // Categories 列出全部已用类别（去重），按类型分组返回。
 func (s *Store) Categories() map[string][]string {
 	seen := map[string]bool{}
