@@ -103,6 +103,25 @@ func TestTopCategoryStableOnTie(t *testing.T) {
 	}
 }
 
+// 所有支出都是 0 时，以前 v > max 永不成立，TopCategory 直接空掉
+func TestTopCategoryAllZero(t *testing.T) {
+	d := day(2026, 3, 1)
+	items := []store.Transaction{
+		tx("expense", 0, "餐饮", d),
+		tx("expense", 0, "交通", d),
+	}
+	s := Build(items)
+	if s.TopCategory == "" {
+		t.Fatal("金额全为 0 也该有个最大支出类别，不该是空")
+	}
+	// 并列时取字典序小的，结果要稳定
+	for i := 0; i < 30; i++ {
+		if got := Build(items).TopCategory; got != s.TopCategory {
+			t.Fatalf("全 0 并列时结果不稳定: %q vs %q", got, s.TopCategory)
+		}
+	}
+}
+
 func TestByMonth(t *testing.T) {
 	items := []store.Transaction{
 		tx("income", 1000, "工资", day(2026, 1, 5)),

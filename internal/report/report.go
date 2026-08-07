@@ -44,12 +44,16 @@ func Build(items []store.Transaction) Summary {
 	// 原来直接遍历 map 找最大值：金额相同的两个类别，
 	// 每次运行 TopCategory 可能不一样（Go 的 map 遍历顺序是随机的）。
 	// 现在金额相同时按类别名取字典序小的那个，输出稳定可复现。
+	// 别拿 max 的零值当初始基准：所有支出都是 0 的时候 v > max 永远不成立，
+	// TopCategory 会莫名其妙变成空。改成用 first 标记首个元素。
 	top := ""
 	var max float64
+	first := true
 	for c, v := range s.ByCategory {
-		if v > max || (v == max && top != "" && c < top) {
+		if first || v > max || (v == max && c < top) {
 			max = v
 			top = c
+			first = false
 		}
 	}
 	s.TopCategory = top
